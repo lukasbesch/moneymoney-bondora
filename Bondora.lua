@@ -5,6 +5,10 @@ WebBanking {
   services = { "Bondora Account" }
 }
 
+-- Custom Build
+
+local unicode = require "utf8"
+
 -- State
 local connection = Connection()
 local html
@@ -44,7 +48,7 @@ function ListAccounts (knownAccounts)
     type = "AccountTypePortfolio"
   }
 
-  return {account}
+  return account
 end
 
 function AccountSummary ()
@@ -59,20 +63,70 @@ function AccountSummary ()
   return JSON(content):dictionary()
 end
 
+function AccountSummaryGoAndGrow ()
+  local headers = {accept = "text/html"}
+  local content = connection:request(
+    "GET",
+    "https://www.bondora.com/de/gogrow/",
+    "",
+    "application/json",
+    headers
+  )
+
+  html = HTML(connection:get("https://www.bondora.com/de/gogrow/"))
+  html = html:xpath("//table[@class='fund__information']")
+
+  local summary = {
+    yourContribution = html:xpath("//td[@class='js-your-contribution']"):text(),
+    potentialGain = html:xpath("//td[@class='js-potential-gain']"):text(),
+    total = html:xpath("//td[@class='js-total']"):text(),
+  }
+
+  for k,v in pairs(summary) do
+    v = string.gsub(v, "%s+", "")       -- remove whitespaces
+    v = utf8sub( v, 0, utf8len(v) - 1 ) -- remove euro character
+    v = utf8replace( v, {["."] = ""} )  -- remove thousands separator dots
+    v = utf8replace( v, {[","] = "."} ) -- replace comma with dot
+    v = tonumber( v )
+    summary[k] = v
+  end
+
+  summary.currentGain = round( ((summary.total / summary.yourContribution) - 1) * 100, 2 )
+
+  return summary
+end
+
 function RefreshAccount (account, since)
   local s = {}
+
+  -- go & grow
+
+  local summaryGoAndGrow = AccountSummaryGoAndGrow()
+
+  local securityGoAndGrow = {
+    name = "Go & Grow",
+    price = summaryGoAndGrow.total,
+    quantity = 1,
+    purchasePrice = summaryGoAndGrow.yourContribution,
+    curreny = nil,
+  }
+
+  table.insert(s, securityGoAndGrow)
+
+  -- general account
+
   summary = AccountSummary()
 
   local value = summary.Stats[1].Value
   local profit = summary.Stats[2].Value
   profit = string.gsub(profit, "[^%d]", "")
   value = string.gsub(value, "[^%d]", "")
-  
+
   local security = {
     name = "Account",
-    price = tonumber(value),
+    price = tonumber(value) - tonumber(securityGoAndGrow.price),
     quantity = 1,
-    purchasePrice = tonumber(value) - tonumber(profit),
+    purchasePrice = tonumber(value) - tonumber(profit) - tonumber(securityGoAndGrow.purchasePrice),
     curreny = nil,
   }
 
@@ -85,4 +139,12 @@ end
 function EndSession ()
   connection:get("https://www.bondora.com/de/authorize/logout/")
   return nil
+end
+
+function round(val, decimal)
+  if (decimal) then
+    return math.floor( (val * 10^decimal) + 0.5) / (10^decimal)
+  else
+    return math.floor(val+0.5)
+  end
 end
